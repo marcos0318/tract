@@ -13,12 +13,11 @@ use super::im2col::Im2Col;
 use crate::ops::cnn::conv::KernelFormat;
 use crate::ops::cnn::PoolSpec;
 use crate::ops::matmul;
-use crate::ops::matmul::mmm_wrapper::MMMWrapper;
 use crate::ops::nn::{DataFormat, DataShape};
 use crate::ops::quant::QParams;
 
-use tract_linalg::frame::mmm::FusedSpec;
 use tract_linalg::frame::PackA;
+use tract_linalg::mmm::{FusedSpec, MatMatMul};
 
 use std::iter::Sum;
 
@@ -141,22 +140,22 @@ impl ConvUnary {
         let b = model.outlet_fact(wire)?.datum_type;
         if (a, b) == (f32::datum_type(), f32::datum_type()) {
             return self.wire_as_im2col_pair_t(model, name, wire, direct, &|m, k, n| {
-                MMMWrapper::Plain((tract_linalg::ops().mmm_f32)(m, k, n))
+                (tract_linalg::ops().mmm_f32)(m, k, n)
             });
         } else if (a, b) == (u8::datum_type(), u8::datum_type()) {
             return self.wire_as_im2col_pair_t(model, name, wire, direct, &|m, k, n| {
-                MMMWrapper::Quant((tract_linalg::ops().qmmm_u8_i32)(m, k, n))
+                (tract_linalg::ops().qmmm_u8_i32)(m, k, n)
             });
         } else if (a, b) == (i8::datum_type(), i8::datum_type()) {
             if let Some(q) = &self.q_params {
                 if q.c_datum_type == i8::datum_type() {
                     return self.wire_as_im2col_pair_t(model, name, wire, direct, &|m, k, n| {
-                        MMMWrapper::Quant((tract_linalg::ops().qmmm_i8_i8)(m, k, n))
+                        (tract_linalg::ops().qmmm_i8_i8)(m, k, n)
                     });
                 }
             } else {
                 return self.wire_as_im2col_pair_t(model, name, wire, direct, &|m, k, n| {
-                    MMMWrapper::Quant((tract_linalg::ops().qmmm_i8_i32)(m, k, n))
+                    (tract_linalg::ops().qmmm_i8_i32)(m, k, n)
                 });
             }
         }
@@ -169,7 +168,7 @@ impl ConvUnary {
         name: &str,
         mut wire: OutletId,
         direct: bool,
-        mmm: impl Fn(usize, usize, usize) -> MMMWrapper<TA, TB, TC, TI>,
+        mmm: impl Fn(usize, usize, usize) -> Box<dyn MatMatMul<TA, TB, TC, TI>>,
     ) -> TractResult<OutletId>
     where
         TA: Datum + Copy + Zero,
@@ -193,10 +192,10 @@ impl ConvUnary {
             DataFormat::NHWC | DataFormat::HWC => (1, self.output_channels() as isize),
             DataFormat::NCHW | DataFormat::CHW => (n as isize, 1),
         };
-        mmm.as_mmm_mut().c_from_data_and_strides(rsc, csc);
+        mmm.c_from_data_and_strides(rsc, csc);
 
         if let Some(q) = self.q_params.as_ref() {
-            mmm.set_quant_params(q)?;
+            q.inject_into_mmm(&mut *mmm)?;
         }
 
         trace!(
@@ -218,7 +217,7 @@ impl ConvUnary {
                         .map(move |x| x + (ici * channel_stride) as isize)
                 })
                 .collect();
-            mmm.as_mmm_mut().b_from_data_and_offsets(&kernel_offsets, &data_offsets);
+            mmm.b_from_data_and_offsets(&kernel_offsets, &data_offsets);
         } else {
             let c_dim = *input_shape.c_dim();
             wire = model.wire_node(
@@ -231,7 +230,7 @@ impl ConvUnary {
                     n,
                     self.group,
                     c_dim / self.group,
-                    mmm.as_mmm().b_pack(),
+                    mmm.b_pack(),
                     tensor0(
                         self.q_params
                             .as_ref()
@@ -265,7 +264,7 @@ impl ConvUnary {
                 bc_c_shape: output_shape.shape.clone(),
                 c_fact: TypedFact::dt_shape(TC::datum_type(), &*output_shape.shape)?,
                 c_prefix_dim_and_stride,
-                packed_as: self.kernel_as_packed_as::<TA>(&mmm.as_mmm().a_pack())?,
+                packed_as: self.kernel_as_packed_as::<TA>(&mmm.a_pack())?,
                 fused_ops: self.bias_as_non_linear()?,
                 mmm,
             },
