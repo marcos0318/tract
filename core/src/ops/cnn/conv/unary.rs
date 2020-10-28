@@ -91,12 +91,14 @@ impl ConvUnary {
                     let mut packed = unsafe {
                         Tensor::uninitialized_aligned::<T>(&[packer.len()], packer.alignment())?
                     };
-                    packer.pack(
-                        packed.as_slice_mut()?.as_mut_ptr(),
-                        subkernel.as_ptr(),
-                        subkernel.strides()[0],
-                        subkernel.strides()[1],
-                    );
+                    unsafe {
+                        packer.pack(
+                            &mut TensorViewMut::at_prefix(&mut packed, &[]),
+                            subkernel.as_ptr() as _,
+                            subkernel.strides()[0],
+                            subkernel.strides()[1],
+                        );
+                    }
                     Ok(packed.into_arc_tensor())
                 })
                 .collect::<TractResult<Vec<_>>>()?,
@@ -141,24 +143,40 @@ impl ConvUnary {
         let a = self.kernel.datum_type();
         let b = model.outlet_fact(wire)?.datum_type;
         if (a, b) == (f32::datum_type(), f32::datum_type()) {
-            return self.wire_as_im2col_pair_t::<f32, f32, f32, f32, _>(model, name, wire, direct, &|m, k, n| {
-                (tract_linalg::ops().mmm_f32)(m, k, n)
-            });
+            return self.wire_as_im2col_pair_t::<f32, f32, f32, f32, _>(
+                model,
+                name,
+                wire,
+                direct,
+                &|m, k, n| (tract_linalg::ops().mmm_f32)(m, k, n),
+            );
         } else if (a, b) == (u8::datum_type(), u8::datum_type()) {
-            return self.wire_as_im2col_pair_t::<u8, u8, i32, i32, _>(model, name, wire, direct, &|m, k, n| {
-                (tract_linalg::ops().qmmm_u8_i32)(m, k, n)
-            });
+            return self.wire_as_im2col_pair_t::<u8, u8, i32, i32, _>(
+                model,
+                name,
+                wire,
+                direct,
+                &|m, k, n| (tract_linalg::ops().qmmm_u8_i32)(m, k, n),
+            );
         } else if (a, b) == (i8::datum_type(), i8::datum_type()) {
             if let Some(q) = &self.q_params {
                 if q.c_datum_type == i8::datum_type() {
-                    return self.wire_as_im2col_pair_t::<i8, i8, i8, i32, _>(model, name, wire, direct, &|m, k, n| {
-                        (tract_linalg::ops().qmmm_i8_i8)(m, k, n)
-                    });
+                    return self.wire_as_im2col_pair_t::<i8, i8, i8, i32, _>(
+                        model,
+                        name,
+                        wire,
+                        direct,
+                        &|m, k, n| (tract_linalg::ops().qmmm_i8_i8)(m, k, n),
+                    );
                 }
             } else {
-                return self.wire_as_im2col_pair_t::<i8, i8, i32, i32, _>(model, name, wire, direct, &|m, k, n| {
-                    (tract_linalg::ops().qmmm_i8_i32)(m, k, n)
-                });
+                return self.wire_as_im2col_pair_t::<i8, i8, i32, i32, _>(
+                    model,
+                    name,
+                    wire,
+                    direct,
+                    &|m, k, n| (tract_linalg::ops().qmmm_i8_i32)(m, k, n),
+                );
             }
         }
         bail!("Unsupported combination for Conv (filters: {:?}, data:{:?})", a, b);
@@ -198,7 +216,7 @@ impl ConvUnary {
         mmm.c_from_data_and_strides(rsc, csc);
 
         if let Some(q) = self.q_params.as_ref() {
-            q.inject_into_mmm::<TA, TB, TC, TI>(&mut *mmm)?;
+            q.inject_into_mmm(&mut *mmm)?;
         }
 
         trace!(
