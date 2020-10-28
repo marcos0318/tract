@@ -78,33 +78,29 @@ impl ConvUnary {
         }
     }
 
-    fn kernel_as_packed_as<T: Datum + Copy + Zero>(
-        &self,
-        packer: &PackA,
-    ) -> TractResult<ArrayD<Arc<Tensor>>> {
+    fn kernel_as_packed_as(&self, packer: &PackA) -> TractResult<ArrayD<Arc<Tensor>>> {
         let kernel = self.kernel_as_group_o_ihw()?;
-        let kernel = kernel.to_array_view::<T>()?;
-        let packed_as = Array1::from(
-            kernel
-                .outer_iter()
-                .map(|subkernel| {
-                    let mut packed = unsafe {
-                        Tensor::uninitialized_aligned::<T>(&[packer.len()], packer.alignment())?
-                    };
-                    unsafe {
+        unsafe {
+            let packed_as = Array1::from(
+                (0..self.group)
+                    .map(|g| {
+                        let mut packed = Tensor::uninitialized_aligned_dt(
+                            kernel.datum_type(),
+                            &[packer.len()],
+                            packer.alignment(),
+                        )?;
                         packer.pack(
                             &mut TensorViewMut::at_prefix(&mut packed, &[]),
-                            subkernel.as_ptr() as _,
-                            subkernel.strides()[0],
-                            subkernel.strides()[1],
+                            &TensorView::at_prefix(&kernel, &[g]),
+                            false,
                         );
-                    }
-                    Ok(packed.into_arc_tensor())
-                })
-                .collect::<TractResult<Vec<_>>>()?,
-        )
-        .into_dyn();
-        Ok(packed_as.insert_axis(Axis(0)))
+                        Ok(packed.into_arc_tensor())
+                    })
+                    .collect::<TractResult<Vec<_>>>()?,
+            )
+            .into_dyn();
+            Ok(packed_as.insert_axis(Axis(0)))
+        }
     }
 
     fn bias_as_non_linear<T>(&self) -> TractResult<Option<ArrayD<Vec<FusedSpec>>>>
@@ -285,7 +281,7 @@ impl ConvUnary {
                 bc_c_shape: output_shape.shape.clone(),
                 c_fact: TypedFact::dt_shape(TC::datum_type(), &*output_shape.shape)?,
                 c_prefix_dim_and_stride,
-                packed_as: self.kernel_as_packed_as::<TA>(&mmm.a_pack())?,
+                packed_as: self.kernel_as_packed_as(&mmm.a_pack())?,
                 fused_ops: self.bias_as_non_linear::<TI>()?,
                 mmm,
                 boo: PhantomData,
