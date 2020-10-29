@@ -93,17 +93,14 @@ where
             let b = args_1!(inputs);
             let mut c = Tensor::uninitialized::<TC>(&*self.c_fact.shape.as_finite().unwrap())?;
             if let Some((prefix_dim, prefix_strides)) = &self.c_prefix_dim_and_stride {
-                let b = b.to_array_view::<TB>()?;
                 let mut c = c.to_array_view_mut::<TC>()?;
                 for prefix in indices(&**prefix_dim).into_iter() {
                     let mut a = self.packed_as.view();
-                    let mut b = b.view();
+                    let mut b_prefix = tvec!();
                     let mut c: *mut TC = c.as_mut_ptr();
                     for (ix, &dim) in prefix.slice().iter().enumerate() {
-                        let d = dim.min(a.shape()[0] - 1);
-                        a.index_axis_inplace(Axis(0), d);
-                        let d = dim.min(b.shape()[0] - 1);
-                        b.index_axis_inplace(Axis(0), d);
+                        a.index_axis_inplace(Axis(0), dim.min(a.shape()[0] - 1));
+                        b_prefix.push(dim.min(b.shape()[ix] - 1));
                         c = c.offset(prefix_strides[ix] * dim as isize);
                     }
                     let pa: &Tensor = a.iter().next().unwrap();
@@ -114,30 +111,30 @@ where
                             fused.index_axis_inplace(Axis(0), d);
                         }
                         self.mmm.run(
-                            pa.as_ptr::<TA>()? as _,
-                            b.as_ptr() as _,
+                            &pa.view(),
+                            &b.view_at_prefix(&b_prefix),
                             c as _,
                             &fused.as_slice().unwrap()[0],
-                        );
+                        )?;
                     } else {
-                        self.mmm.run(pa.as_ptr::<TA>()? as _, b.as_ptr() as _, c as _, &[]);
+                        self.mmm.run(&pa.view(), &b.view_at_prefix(&b_prefix), c as _, &[])?;
                     }
                 }
             } else {
                 if let Some(fused) = &self.fused_ops {
                     self.mmm.run(
-                        self.packed_as.as_slice().unwrap()[0].as_ptr::<TA>()? as _,
-                        b.as_ptr::<TB>()? as _,
+                        &self.packed_as.as_slice().unwrap()[0].view(),
+                        &b.view(),
                         c.as_ptr_mut::<TC>()? as _,
                         &fused.as_slice().unwrap()[0],
-                    );
+                    )?;
                 } else {
                     self.mmm.run(
-                        self.packed_as.as_slice().unwrap()[0].as_ptr::<TA>()? as _,
-                        b.as_ptr::<TB>()? as _,
+                        &self.packed_as.as_slice().unwrap()[0].view(),
+                        &b.view(),
                         c.as_ptr_mut::<TC>()? as _,
                         &[],
-                    );
+                    )?;
                 }
             }
             Ok(tvec!(c.into_arc_tensor()))
