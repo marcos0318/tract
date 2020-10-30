@@ -125,7 +125,7 @@ impl EvalOp for Im2Col {
                     for g in 0..self.group {
                         let input = if let Some(ref n_axis) = self.input_shape.n_axis() {
                             debug_assert!(*n_axis == 0);
-                            input.view_at_prefix(&[i])
+                            input.view_at_prefix(&[i])?
                         } else {
                             input.view()
                         };
@@ -133,7 +133,7 @@ impl EvalOp for Im2Col {
                             &self.patcher,
                             self,
                             &input,
-                            &mut tensor.view_at_prefix_mut(&[i, g]),
+                            &mut tensor.view_at_prefix_mut(&[i, g])?,
                             g
                         ))?
                     }
